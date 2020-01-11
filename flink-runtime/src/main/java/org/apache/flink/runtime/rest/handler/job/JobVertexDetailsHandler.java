@@ -20,7 +20,7 @@ package org.apache.flink.runtime.rest.handler.job;
 
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.time.Time;
-import org.apache.flink.runtime.execution.ExecutionState;
+import org.apache.flink.runtime.executiongraph.AccessExecution;
 import org.apache.flink.runtime.executiongraph.AccessExecutionGraph;
 import org.apache.flink.runtime.executiongraph.AccessExecutionJobVertex;
 import org.apache.flink.runtime.executiongraph.AccessExecutionVertex;
@@ -29,41 +29,43 @@ import org.apache.flink.runtime.rest.NotFoundException;
 import org.apache.flink.runtime.rest.handler.HandlerRequest;
 import org.apache.flink.runtime.rest.handler.legacy.ExecutionGraphCache;
 import org.apache.flink.runtime.rest.handler.legacy.metrics.MetricFetcher;
-import org.apache.flink.runtime.rest.handler.util.MutableIOMetrics;
 import org.apache.flink.runtime.rest.messages.EmptyRequestBody;
 import org.apache.flink.runtime.rest.messages.JobIDPathParameter;
 import org.apache.flink.runtime.rest.messages.JobVertexDetailsInfo;
 import org.apache.flink.runtime.rest.messages.JobVertexIdPathParameter;
 import org.apache.flink.runtime.rest.messages.JobVertexMessageParameters;
 import org.apache.flink.runtime.rest.messages.MessageHeaders;
-import org.apache.flink.runtime.rest.messages.job.metrics.IOMetricsInfo;
-import org.apache.flink.runtime.taskmanager.TaskManagerLocation;
+import org.apache.flink.runtime.rest.messages.ResponseBody;
+import org.apache.flink.runtime.rest.messages.job.SubtaskExecutionAttemptDetailsInfo;
 import org.apache.flink.runtime.webmonitor.RestfulGateway;
+import org.apache.flink.runtime.webmonitor.history.ArchivedJson;
+import org.apache.flink.runtime.webmonitor.history.JsonArchivist;
 import org.apache.flink.runtime.webmonitor.retriever.GatewayRetriever;
 
+import javax.annotation.Nullable;
+
+import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 
 /**
  * Request handler for the job vertex details.
  */
-public class JobVertexDetailsHandler extends AbstractExecutionGraphHandler<JobVertexDetailsInfo, JobVertexMessageParameters> {
-	private final MetricFetcher<? extends RestfulGateway> metricFetcher;
+public class JobVertexDetailsHandler extends AbstractExecutionGraphHandler<JobVertexDetailsInfo, JobVertexMessageParameters> implements JsonArchivist {
+	private final MetricFetcher metricFetcher;
 
 	public JobVertexDetailsHandler(
-			CompletableFuture<String> localRestAddress,
 			GatewayRetriever<? extends RestfulGateway> leaderRetriever,
 			Time timeout,
 			Map<String, String> responseHeaders,
 			MessageHeaders<EmptyRequestBody, JobVertexDetailsInfo, JobVertexMessageParameters> messageHeaders,
 			ExecutionGraphCache executionGraphCache,
 			Executor executor,
-			MetricFetcher<? extends RestfulGateway> metricFetcher) {
+			MetricFetcher metricFetcher) {
 		super(
-			localRestAddress,
 			leaderRetriever,
 			timeout,
 			responseHeaders,
@@ -85,47 +87,30 @@ public class JobVertexDetailsHandler extends AbstractExecutionGraphHandler<JobVe
 			throw new NotFoundException(String.format("JobVertex %s not found", jobVertexID));
 		}
 
-		List<JobVertexDetailsInfo.VertexTaskDetail> subtasks = new ArrayList<>();
+		return createJobVertexDetailsInfo(jobVertex, jobID, metricFetcher);
+	}
+
+	@Override
+	public Collection<ArchivedJson> archiveJsonWithPath(AccessExecutionGraph graph) throws IOException {
+		Collection<? extends AccessExecutionJobVertex> vertices = graph.getAllVertices().values();
+		List<ArchivedJson> archive = new ArrayList<>(vertices.size());
+		for (AccessExecutionJobVertex task : vertices) {
+			ResponseBody json = createJobVertexDetailsInfo(task, graph.getJobID(), null);
+			String path = getMessageHeaders().getTargetRestEndpointURL()
+				.replace(':' + JobIDPathParameter.KEY, graph.getJobID().toString())
+				.replace(':' + JobVertexIdPathParameter.KEY, task.getJobVertexId().toString());
+			archive.add(new ArchivedJson(path, json));
+		}
+		return archive;
+	}
+
+	private static JobVertexDetailsInfo createJobVertexDetailsInfo(AccessExecutionJobVertex jobVertex, JobID jobID, @Nullable MetricFetcher metricFetcher) {
+		List<SubtaskExecutionAttemptDetailsInfo> subtasks = new ArrayList<>();
 		final long now = System.currentTimeMillis();
-		int num = 0;
 		for (AccessExecutionVertex vertex : jobVertex.getTaskVertices()) {
-			final ExecutionState status = vertex.getExecutionState();
-
-			TaskManagerLocation location = vertex.getCurrentAssignedResourceLocation();
-			String locationString = location == null ? "(unassigned)" : location.getHostname() + ":" + location.dataPort();
-
-			long startTime = vertex.getStateTimestamp(ExecutionState.DEPLOYING);
-			if (startTime == 0) {
-				startTime = -1;
-			}
-			long endTime = status.isTerminal() ? vertex.getStateTimestamp(status) : -1;
-			long duration = startTime > 0 ? ((endTime > 0 ? endTime : now) - startTime) : -1;
-
-			MutableIOMetrics counts = new MutableIOMetrics();
-			counts.addIOMetrics(
-				vertex.getCurrentExecutionAttempt(),
-				metricFetcher,
-				jobID.toString(),
-				jobVertex.getJobVertexId().toString());
-			subtasks.add(new JobVertexDetailsInfo.VertexTaskDetail(
-				num,
-				status,
-				vertex.getCurrentExecutionAttempt().getAttemptNumber(),
-				locationString,
-				startTime,
-				endTime,
-				duration,
-				new IOMetricsInfo(
-					counts.getNumBytesInLocal() + counts.getNumBytesInRemote(),
-					counts.isNumBytesInLocalComplete() && counts.isNumBytesInRemoteComplete(),
-					counts.getNumBytesOut(),
-					counts.isNumBytesOutComplete(),
-					counts.getNumRecordsIn(),
-					counts.isNumRecordsInComplete(),
-					counts.getNumRecordsOut(),
-					counts.isNumRecordsOutComplete())));
-
-			num++;
+			final AccessExecution execution = vertex.getCurrentExecutionAttempt();
+			final JobVertexID jobVertexID = jobVertex.getJobVertexId();
+			subtasks.add(SubtaskExecutionAttemptDetailsInfo.create(execution, metricFetcher, jobID, jobVertexID));
 		}
 
 		return new JobVertexDetailsInfo(

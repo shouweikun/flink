@@ -23,8 +23,7 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.WebOptions;
 import org.apache.flink.util.Preconditions;
 
-import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.io.File;
 
 /**
  * Configuration object containing values for the rest handler configuration.
@@ -37,13 +36,16 @@ public class RestHandlerConfiguration {
 
 	private final Time timeout;
 
-	private final Path webUiDir;
+	private final File webUiDir;
+
+	private final boolean webSubmitEnabled;
 
 	public RestHandlerConfiguration(
 			long refreshInterval,
 			int maxCheckpointStatisticCacheEntries,
 			Time timeout,
-			Path webUiDir) {
+			File webUiDir,
+			boolean webSubmitEnabled) {
 		Preconditions.checkArgument(refreshInterval > 0L, "The refresh interval (ms) should be larger than 0.");
 		this.refreshInterval = refreshInterval;
 
@@ -51,6 +53,7 @@ public class RestHandlerConfiguration {
 
 		this.timeout = Preconditions.checkNotNull(timeout);
 		this.webUiDir = Preconditions.checkNotNull(webUiDir);
+		this.webSubmitEnabled = webSubmitEnabled;
 	}
 
 	public long getRefreshInterval() {
@@ -65,8 +68,12 @@ public class RestHandlerConfiguration {
 		return timeout;
 	}
 
-	public Path getWebUiDir() {
+	public File getWebUiDir() {
 		return webUiDir;
+	}
+
+	public boolean isWebSubmitEnabled() {
+		return webSubmitEnabled;
 	}
 
 	public static RestHandlerConfiguration fromConfiguration(Configuration configuration) {
@@ -77,12 +84,15 @@ public class RestHandlerConfiguration {
 		final Time timeout = Time.milliseconds(configuration.getLong(WebOptions.TIMEOUT));
 
 		final String rootDir = "flink-web-ui";
-		final Path webUiDir = Paths.get(configuration.getString(WebOptions.TMP_DIR), rootDir);
+		final File webUiDir = new File(configuration.getString(WebOptions.TMP_DIR), rootDir);
+
+		final boolean webSubmitEnabled = configuration.getBoolean(WebOptions.SUBMIT_ENABLE);
 
 		return new RestHandlerConfiguration(
 			refreshInterval,
 			maxCheckpointStatisticCacheEntries,
 			timeout,
-			webUiDir);
+			webUiDir,
+			webSubmitEnabled);
 	}
 }

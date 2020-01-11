@@ -32,10 +32,10 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * This is a {@link ProcessingTimeService} used <b>strictly for testing</b> the
+ * This is a {@link TimerService} and {@link ProcessingTimeService} used <b>strictly for testing</b> the
  * processing time functionality.
- * */
-public class TestProcessingTimeService extends ProcessingTimeService {
+ */
+public class TestProcessingTimeService implements TimerService {
 
 	private volatile long currentTime = Long.MIN_VALUE;
 
@@ -135,7 +135,7 @@ public class TestProcessingTimeService extends ProcessingTimeService {
 	}
 
 	@Override
-	public boolean shutdownAndAwaitPending(long time, TimeUnit timeUnit) throws InterruptedException {
+	public boolean shutdownServiceUninterruptible(long timeoutMs) {
 		shutdownService();
 		return true;
 	}

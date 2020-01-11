@@ -18,13 +18,10 @@
 
 package org.apache.flink.runtime.io.network.netty;
 
-import org.apache.flink.runtime.io.network.NetworkClientHandler;
-import org.apache.flink.runtime.io.network.TaskEventDispatcher;
+import org.apache.flink.runtime.io.network.TaskEventPublisher;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionProvider;
 
 import org.apache.flink.shaded.netty4.io.netty.channel.ChannelHandler;
-
-import static org.apache.flink.runtime.io.network.netty.NettyMessage.NettyMessageEncoder.createFrameLengthDecoder;
 
 /**
  * Defines the server and client channel handlers, i.e. the protocol, used by netty.
@@ -34,17 +31,12 @@ public class NettyProtocol {
 	private final NettyMessage.NettyMessageEncoder
 		messageEncoder = new NettyMessage.NettyMessageEncoder();
 
-	private final NettyMessage.NettyMessageDecoder messageDecoder = new NettyMessage.NettyMessageDecoder();
-
 	private final ResultPartitionProvider partitionProvider;
-	private final TaskEventDispatcher taskEventDispatcher;
+	private final TaskEventPublisher taskEventPublisher;
 
-	private final boolean creditBasedEnabled;
-
-	NettyProtocol(ResultPartitionProvider partitionProvider, TaskEventDispatcher taskEventDispatcher, boolean creditBasedEnabled) {
+	NettyProtocol(ResultPartitionProvider partitionProvider, TaskEventPublisher taskEventPublisher) {
 		this.partitionProvider = partitionProvider;
-		this.taskEventDispatcher = taskEventDispatcher;
-		this.creditBasedEnabled = creditBasedEnabled;
+		this.taskEventPublisher = taskEventPublisher;
 	}
 
 	/**
@@ -64,14 +56,9 @@ public class NettyProtocol {
 	 * |    +----------+----------+                        |               |
 	 * |              /|\                                  |               |
 	 * |               |                                   |               |
-	 * |    +----------+----------+                        |               |
-	 * |    | Message decoder     |                        |               |
-	 * |    +----------+----------+                        |               |
-	 * |              /|\                                  |               |
-	 * |               |                                   |               |
-	 * |    +----------+----------+                        |               |
-	 * |    | Frame decoder       |                        |               |
-	 * |    +----------+----------+                        |               |
+	 * |   +-----------+-----------+                       |               |
+	 * |   | Message+Frame decoder |                       |               |
+	 * |   +-----------+-----------+                       |               |
 	 * |              /|\                                  |               |
 	 * +---------------+-----------------------------------+---------------+
 	 * |               | (1) client request               \|/
@@ -88,12 +75,13 @@ public class NettyProtocol {
 	public ChannelHandler[] getServerChannelHandlers() {
 		PartitionRequestQueue queueOfPartitionQueues = new PartitionRequestQueue();
 		PartitionRequestServerHandler serverHandler = new PartitionRequestServerHandler(
-			partitionProvider, taskEventDispatcher, queueOfPartitionQueues, creditBasedEnabled);
+			partitionProvider,
+			taskEventPublisher,
+			queueOfPartitionQueues);
 
 		return new ChannelHandler[] {
 			messageEncoder,
-			createFrameLengthDecoder(),
-			messageDecoder,
+			new NettyMessage.NettyMessageDecoder(),
 			serverHandler,
 			queueOfPartitionQueues
 		};
@@ -115,14 +103,9 @@ public class NettyProtocol {
 	 * |    +----------+----------+            +-----------+----------+    |
 	 * |              /|\                                 \|/              |
 	 * |               |                                   |               |
-	 * |    +----------+----------+                        |               |
-	 * |    | Message decoder     |                        |               |
-	 * |    +----------+----------+                        |               |
-	 * |              /|\                                  |               |
-	 * |               |                                   |               |
-	 * |    +----------+----------+                        |               |
-	 * |    | Frame decoder       |                        |               |
-	 * |    +----------+----------+                        |               |
+	 * |    +----------+------------+                      |               |
+	 * |    | Message+Frame decoder |                      |               |
+	 * |    +----------+------------+                      |               |
 	 * |              /|\                                  |               |
 	 * +---------------+-----------------------------------+---------------+
 	 * |               | (3) server response              \|/ (2) client request
@@ -137,14 +120,10 @@ public class NettyProtocol {
 	 * @return channel handlers
 	 */
 	public ChannelHandler[] getClientChannelHandlers() {
-		NetworkClientHandler networkClientHandler =
-			creditBasedEnabled ? new CreditBasedPartitionRequestClientHandler() :
-				new PartitionRequestClientHandler();
 		return new ChannelHandler[] {
 			messageEncoder,
-			createFrameLengthDecoder(),
-			messageDecoder,
-			networkClientHandler};
+			new NettyMessage.NettyMessageDecoder(),
+			new CreditBasedPartitionRequestClientHandler()};
 	}
 
 }

@@ -19,8 +19,10 @@
 package org.apache.flink.streaming.util;
 
 import org.apache.flink.api.common.typeutils.TypeSerializer;
+import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.operators.testutils.MockEnvironment;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
+import org.apache.flink.streaming.api.operators.OneInputStreamOperatorFactory;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.util.Preconditions;
@@ -37,8 +39,6 @@ import java.util.Collection;
 public class OneInputStreamOperatorTestHarness<IN, OUT>
 		extends AbstractStreamOperatorTestHarness<OUT> {
 
-	private final OneInputStreamOperator<IN, OUT> oneInputOperator;
-
 	private long currentWatermark;
 
 	public OneInputStreamOperatorTestHarness(
@@ -54,8 +54,9 @@ public class OneInputStreamOperatorTestHarness<IN, OUT>
 		int maxParallelism,
 		int parallelism,
 		int subtaskIndex,
-		TypeSerializer<IN> typeSerializerIn) throws Exception {
-		this(operator, maxParallelism, parallelism, subtaskIndex);
+		TypeSerializer<IN> typeSerializerIn,
+		OperatorID operatorID) throws Exception {
+		this(operator, maxParallelism, parallelism, subtaskIndex, operatorID);
 
 		config.setTypeSerializerIn1(Preconditions.checkNotNull(typeSerializerIn));
 	}
@@ -78,17 +79,66 @@ public class OneInputStreamOperatorTestHarness<IN, OUT>
 			int maxParallelism,
 			int parallelism,
 			int subtaskIndex) throws Exception {
-		super(operator, maxParallelism, parallelism, subtaskIndex);
+		this(operator, maxParallelism, parallelism, subtaskIndex, new OperatorID());
+	}
 
-		this.oneInputOperator = operator;
+	public OneInputStreamOperatorTestHarness(
+			OneInputStreamOperator<IN, OUT> operator,
+			int maxParallelism,
+			int parallelism,
+			int subtaskIndex,
+			OperatorID operatorID) throws Exception {
+		super(operator, maxParallelism, parallelism, subtaskIndex, operatorID);
 	}
 
 	public OneInputStreamOperatorTestHarness(
 		OneInputStreamOperator<IN, OUT> operator,
 		MockEnvironment environment) throws Exception {
 		super(operator, environment);
+	}
 
-		this.oneInputOperator = operator;
+	public OneInputStreamOperatorTestHarness(
+			OneInputStreamOperatorFactory<IN, OUT> factory,
+			TypeSerializer<IN> typeSerializerIn,
+			MockEnvironment environment) throws Exception {
+		this(factory, environment);
+
+		config.setTypeSerializerIn1(Preconditions.checkNotNull(typeSerializerIn));
+	}
+
+	public OneInputStreamOperatorTestHarness(
+			OneInputStreamOperatorFactory<IN, OUT> factory,
+			MockEnvironment environment) throws Exception {
+		super(factory, environment);
+	}
+
+	public OneInputStreamOperatorTestHarness(
+			OneInputStreamOperatorFactory<IN, OUT> factory,
+			TypeSerializer<IN> typeSerializerIn) throws Exception {
+		this(factory, 1, 1, 0);
+
+		config.setTypeSerializerIn1(Preconditions.checkNotNull(typeSerializerIn));
+	}
+
+	public OneInputStreamOperatorTestHarness(
+			OneInputStreamOperatorFactory<IN, OUT> factory,
+			int maxParallelism,
+			int parallelism,
+			int subtaskIndex) throws Exception {
+		this(factory, maxParallelism, parallelism, subtaskIndex, new OperatorID());
+	}
+
+	public OneInputStreamOperatorTestHarness(
+			OneInputStreamOperatorFactory<IN, OUT> factory,
+			int maxParallelism,
+			int parallelism,
+			int subtaskIndex,
+			OperatorID operatorID) throws Exception {
+		super(factory, maxParallelism, parallelism, subtaskIndex, operatorID);
+	}
+
+	public OneInputStreamOperator<IN, OUT> getOneInputOperator() {
+		return (OneInputStreamOperator<IN, OUT>) this.operator;
 	}
 
 	public void processElement(IN value, long timestamp) throws Exception {
@@ -97,13 +147,13 @@ public class OneInputStreamOperatorTestHarness<IN, OUT>
 
 	public void processElement(StreamRecord<IN> element) throws Exception {
 		operator.setKeyContextElement1(element);
-		oneInputOperator.processElement(element);
+		getOneInputOperator().processElement(element);
 	}
 
 	public void processElements(Collection<StreamRecord<IN>> elements) throws Exception {
 		for (StreamRecord<IN> element: elements) {
 			operator.setKeyContextElement1(element);
-			oneInputOperator.processElement(element);
+			getOneInputOperator().processElement(element);
 		}
 	}
 
@@ -113,7 +163,7 @@ public class OneInputStreamOperatorTestHarness<IN, OUT>
 
 	public void processWatermark(Watermark mark) throws Exception {
 		currentWatermark = mark.getTimestamp();
-		oneInputOperator.processWatermark(mark);
+		getOneInputOperator().processWatermark(mark);
 	}
 
 	public long getCurrentWatermark() {

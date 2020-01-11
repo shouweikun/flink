@@ -31,10 +31,12 @@ import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.ClosedChannelException;
+import java.nio.channels.FileChannel;
 import java.nio.channels.GatheringByteChannel;
 import java.nio.channels.ScatteringByteChannel;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
+import static org.apache.flink.util.Preconditions.checkState;
 
 /**
  * Wrapper for pooled {@link MemorySegment} instances.
@@ -61,6 +63,9 @@ public class NetworkBuffer extends AbstractReferenceCountedByteBuf implements Bu
 	 * size of the backing {@link MemorySegment} (inclusive).
 	 */
 	private int currentSize;
+
+	/** Whether the buffer is compressed or not. */
+	private boolean isCompressed = false;
 
 	/**
 	 * Creates a new buffer instance backed by the given <tt>memorySegment</tt> with <tt>0</tt> for
@@ -92,7 +97,7 @@ public class NetworkBuffer extends AbstractReferenceCountedByteBuf implements Bu
 
 	/**
 	 * Creates a new buffer instance backed by the given <tt>memorySegment</tt> with <tt>0</tt> for
-	 * the <tt>readerIndex</tt> and <tt>writerIndex</tt>.
+	 * the <tt>readerIndex</tt> and <tt>size</tt> as <tt>writerIndex</tt>.
 	 *
 	 * @param memorySegment
 	 * 		backing memory segment (defines {@link #maxCapacity})
@@ -104,10 +109,30 @@ public class NetworkBuffer extends AbstractReferenceCountedByteBuf implements Bu
 	 * 		current size of data in the buffer, i.e. the writer index to set
 	 */
 	public NetworkBuffer(MemorySegment memorySegment, BufferRecycler recycler, boolean isBuffer, int size) {
+		this(memorySegment, recycler, isBuffer, false, size);
+	}
+
+	/**
+	 * Creates a new buffer instance backed by the given <tt>memorySegment</tt> with <tt>0</tt> for
+	 * the <tt>readerIndex</tt> and <tt>size</tt> as <tt>writerIndex</tt>.
+	 *
+	 * @param memorySegment
+	 * 		backing memory segment (defines {@link #maxCapacity})
+	 * @param recycler
+	 * 		will be called to recycle this buffer once the reference count is <tt>0</tt>
+	 * @param isBuffer
+	 * 		whether this buffer represents a buffer (<tt>true</tt>) or an event (<tt>false</tt>)
+	 * @param size
+	 * 		current size of data in the buffer, i.e. the writer index to set
+	 * @param isCompressed
+	 * 		whether the buffer is compressed or not
+	 */
+	public NetworkBuffer(MemorySegment memorySegment, BufferRecycler recycler, boolean isBuffer, boolean isCompressed, int size) {
 		super(memorySegment.size());
 		this.memorySegment = checkNotNull(memorySegment);
 		this.recycler = checkNotNull(recycler);
 		this.isBuffer = isBuffer;
+		this.isCompressed = isCompressed;
 		this.currentSize = memorySegment.size();
 		setSize(size);
 	}
@@ -163,6 +188,7 @@ public class NetworkBuffer extends AbstractReferenceCountedByteBuf implements Bu
 
 	@Override
 	public ReadOnlySlicedNetworkBuffer readOnlySlice(int index, int length) {
+		checkState(!isCompressed, "Unable to slice a compressed buffer.");
 		return new ReadOnlySlicedNetworkBuffer(this, index, length);
 	}
 
@@ -182,9 +208,20 @@ public class NetworkBuffer extends AbstractReferenceCountedByteBuf implements Bu
 	}
 
 	@Override
+	protected short _getShortLE(int index) {
+		return memorySegment.getShortLittleEndian(index);
+	}
+
+	@Override
 	protected int _getUnsignedMedium(int index) {
 		// from UnpooledDirectByteBuf:
 		return (getByte(index) & 0xff) << 16 | (getByte(index + 1) & 0xff) << 8 | getByte(index + 2) & 0xff;
+	}
+
+	@Override
+	protected int _getUnsignedMediumLE(int index) {
+		// from UnpooledDirectByteBuf:
+		return getByte(index) & 255 | (getByte(index + 1) & 255) << 8 | (getByte(index + 2) & 255) << 16;
 	}
 
 	@Override
@@ -193,8 +230,18 @@ public class NetworkBuffer extends AbstractReferenceCountedByteBuf implements Bu
 	}
 
 	@Override
+	protected int _getIntLE(int index) {
+		return memorySegment.getIntLittleEndian(index);
+	}
+
+	@Override
 	protected long _getLong(int index) {
 		return memorySegment.getLongBigEndian(index);
+	}
+
+	@Override
+	protected long _getLongLE(int index) {
+		return memorySegment.getLongLittleEndian(index);
 	}
 
 	@Override
@@ -208,6 +255,11 @@ public class NetworkBuffer extends AbstractReferenceCountedByteBuf implements Bu
 	}
 
 	@Override
+	protected void _setShortLE(int index, int value) {
+		memorySegment.putShortLittleEndian(index, (short) value);
+	}
+
+	@Override
 	protected void _setMedium(int index, int value) {
 		// from UnpooledDirectByteBuf:
 		setByte(index, (byte) (value >>> 16));
@@ -216,13 +268,31 @@ public class NetworkBuffer extends AbstractReferenceCountedByteBuf implements Bu
 	}
 
 	@Override
+	protected void _setMediumLE(int index, int value){
+		// from UnpooledDirectByteBuf:
+		setByte(index, (byte) value);
+		setByte(index + 1, (byte) (value >>> 8));
+		setByte(index + 2, (byte) (value >>> 16));
+	}
+
+	@Override
 	protected void _setInt(int index, int value) {
 		memorySegment.putIntBigEndian(index, value);
 	}
 
 	@Override
+	protected void _setIntLE(int index, int value) {
+		memorySegment.putIntLittleEndian(index, value);
+	}
+
+	@Override
 	protected void _setLong(int index, long value) {
 		memorySegment.putLongBigEndian(index, value);
+	}
+
+	@Override
+	protected void _setLongLE(int index, long value) {
+		memorySegment.putLongLittleEndian(index, value);
 	}
 
 	@Override
@@ -243,11 +313,6 @@ public class NetworkBuffer extends AbstractReferenceCountedByteBuf implements Bu
 	@Override
 	public void setReaderIndex(int readerIndex) throws IndexOutOfBoundsException {
 		readerIndex(readerIndex);
-	}
-
-	@Override
-	public int getSizeUnsafe() {
-		return writerIndex();
 	}
 
 	@Override
@@ -357,6 +422,18 @@ public class NetworkBuffer extends AbstractReferenceCountedByteBuf implements Bu
 	}
 
 	@Override
+	public int getBytes(int index, FileChannel out, long position, int length) throws IOException {
+		// adapted from UnpooledDirectByteBuf:
+		checkIndex(index, length);
+		if (length == 0) {
+			return 0;
+		}
+
+		ByteBuffer tmpBuf = memorySegment.wrap(index, length);
+		return out.write(tmpBuf, position);
+	}
+
+	@Override
 	public ByteBuf setBytes(int index, ByteBuf src, int srcIndex, int length) {
 		// from UnpooledDirectByteBuf:
 		checkSrcIndex(index, length, srcIndex, src.capacity());
@@ -419,6 +496,19 @@ public class NetworkBuffer extends AbstractReferenceCountedByteBuf implements Bu
 		ByteBuffer tmpBuf = memorySegment.wrap(index, length);
 		try {
 			return in.read(tmpBuf);
+		} catch (ClosedChannelException ignored) {
+			return -1;
+		}
+	}
+
+	@Override
+	public int setBytes(int index, FileChannel in, long position, int length) throws IOException {
+		// adapted from UnpooledDirectByteBuf:
+		checkIndex(index, length);
+
+		ByteBuffer tmpBuf = memorySegment.wrap(index, length);
+		try {
+			return in.read(tmpBuf, position);
 		} catch (ClosedChannelException ignored) {
 			return -1;
 		}
@@ -538,5 +628,15 @@ public class NetworkBuffer extends AbstractReferenceCountedByteBuf implements Bu
 	@Override
 	public ByteBuf asByteBuf() {
 		return this;
+	}
+
+	@Override
+	public boolean isCompressed() {
+		return isCompressed;
+	}
+
+	@Override
+	public void setCompressed(boolean isCompressed) {
+		this.isCompressed = isCompressed;
 	}
 }

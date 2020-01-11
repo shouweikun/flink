@@ -21,51 +21,78 @@ package org.apache.flink.yarn;
 import org.apache.flink.client.deployment.ClusterSpecification;
 import org.apache.flink.client.program.ClusterClient;
 import org.apache.flink.configuration.AkkaOptions;
-import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.jobgraph.JobGraph;
+import org.apache.flink.runtime.jobmaster.JobResult;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.DiscardingSink;
-import org.apache.flink.streaming.api.functions.source.ParallelSourceFunction;
+import org.apache.flink.yarn.configuration.YarnConfigOptions;
+import org.apache.flink.yarn.testjob.YarnTestCacheJob;
+import org.apache.flink.yarn.util.YarnTestUtils;
 
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
-import org.apache.hadoop.yarn.client.api.YarnClient;
 import org.junit.BeforeClass;
-import org.junit.Ignore;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
 import java.io.File;
+import java.time.Duration;
 import java.util.Arrays;
-import java.util.Random;
+import java.util.concurrent.CompletableFuture;
+
+import static org.apache.flink.yarn.configuration.YarnConfigOptions.CLASSPATH_INCLUDE_USER_JAR;
+import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.notNullValue;
+import static org.junit.Assert.assertThat;
 
 /**
  * Test cases for the deployment of Yarn Flink clusters.
  */
 public class YARNITCase extends YarnTestBase {
 
+	private final Duration yarnAppTerminateTimeout = Duration.ofSeconds(10);
+
+	private final int sleepIntervalInMS = 100;
+
+	@Rule
+	public final TemporaryFolder temporaryFolder = new TemporaryFolder();
+
 	@BeforeClass
 	public static void setup() {
-		YARN_CONFIGURATION.set(YarnTestBase.TEST_CLUSTER_NAME_KEY, "flink-yarn-tests-ha");
+		YARN_CONFIGURATION.set(YarnTestBase.TEST_CLUSTER_NAME_KEY, "flink-yarn-tests-per-job");
 		startYARNWithConfig(YARN_CONFIGURATION);
 	}
 
-	@Ignore("The cluster cannot be stopped yet.")
 	@Test
-	public void testPerJobMode() throws Exception {
+	public void testPerJobModeWithEnableSystemClassPathIncludeUserJar() throws Exception {
+		runTest(() -> deployPerjob(YarnConfigOptions.UserJarInclusion.FIRST, getTestingJobGraph()));
+	}
+
+	@Test
+	public void testPerJobModeWithDisableSystemClassPathIncludeUserJar() throws Exception {
+		runTest(() -> deployPerjob(YarnConfigOptions.UserJarInclusion.DISABLED, getTestingJobGraph()));
+	}
+
+	@Test
+	public void testPerJobModeWithDistributedCache() throws Exception {
+		runTest(() -> deployPerjob(
+			YarnConfigOptions.UserJarInclusion.DISABLED,
+			YarnTestCacheJob.getDistributedCacheJobGraph(tmp.newFolder())));
+	}
+
+	private void deployPerjob(YarnConfigOptions.UserJarInclusion userJarInclusion, JobGraph jobGraph) throws Exception {
+
 		Configuration configuration = new Configuration();
 		configuration.setString(AkkaOptions.ASK_TIMEOUT, "30 s");
-		final YarnClient yarnClient = getYarnClient();
+		configuration.setString(CLASSPATH_INCLUDE_USER_JAR, userJarInclusion.toString());
 
-		try (final YarnClusterDescriptor yarnClusterDescriptor = new YarnClusterDescriptor(
-			configuration,
-			getYarnConfiguration(),
-			System.getenv(ConfigConstants.ENV_FLINK_CONF_DIR),
-			yarnClient,
-			true)) {
+		try (final YarnClusterDescriptor yarnClusterDescriptor = createYarnClusterDescriptor(configuration)) {
 
 			yarnClusterDescriptor.setLocalJarPath(new Path(flinkUberjar.getAbsolutePath()));
 			yarnClusterDescriptor.addShipFiles(Arrays.asList(flinkLibFolder.listFiles()));
+			yarnClusterDescriptor.addShipFiles(Arrays.asList(flinkShadedHadoopDir.listFiles()));
 
 			final ClusterSpecification clusterSpecification = new ClusterSpecification.ClusterSpecificationBuilder()
 				.setMasterMemoryMB(768)
@@ -74,53 +101,39 @@ public class YARNITCase extends YarnTestBase {
 				.setNumberTaskManagers(1)
 				.createClusterSpecification();
 
-			StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-			env.setParallelism(2);
-
-			env.addSource(new InfiniteSource())
-				.shuffle()
-				.addSink(new DiscardingSink<Integer>());
-
-			final JobGraph jobGraph = env.getStreamGraph().getJobGraph();
-
-			File testingJar = YarnTestBase.findFile("..", new TestingYarnClusterDescriptor.TestJarFinder("flink-yarn-tests"));
+			File testingJar = YarnTestBase.findFile("..", new YarnTestUtils.TestJarFinder("flink-yarn-tests"));
 
 			jobGraph.addJar(new org.apache.flink.core.fs.Path(testingJar.toURI()));
+			try (ClusterClient<ApplicationId> clusterClient = yarnClusterDescriptor
+					.deployJobCluster(
+							clusterSpecification,
+							jobGraph,
+							false)
+					.getClusterClient()) {
 
-			ClusterClient<ApplicationId> clusterClient = yarnClusterDescriptor.deployJobCluster(
-				clusterSpecification,
-				jobGraph,
-				true);
+				ApplicationId applicationId = clusterClient.getClusterId();
 
-			clusterClient.shutdown();
+				final CompletableFuture<JobResult> jobResultCompletableFuture = clusterClient.requestJobResult(jobGraph.getJobID());
+
+				final JobResult jobResult = jobResultCompletableFuture.get();
+
+				assertThat(jobResult, is(notNullValue()));
+				assertThat(jobResult.getSerializedThrowable().isPresent(), is(false));
+
+				waitApplicationFinishedElseKillIt(
+					applicationId, yarnAppTerminateTimeout, yarnClusterDescriptor, sleepIntervalInMS);
+			}
 		}
 	}
 
-	private static class InfiniteSource implements ParallelSourceFunction<Integer> {
+	private JobGraph getTestingJobGraph() {
+		final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+		env.setParallelism(2);
 
-		private static final long serialVersionUID = 1642561062000662861L;
-		private volatile boolean running;
-		private final Random random;
+		env.addSource(new NoDataSource())
+			.shuffle()
+			.addSink(new DiscardingSink<>());
 
-		InfiniteSource() {
-			running = true;
-			random = new Random();
-		}
-
-		@Override
-		public void run(SourceContext<Integer> ctx) throws Exception {
-			while (running) {
-				synchronized (ctx.getCheckpointLock()) {
-					ctx.collect(random.nextInt());
-				}
-
-				Thread.sleep(5L);
-			}
-		}
-
-		@Override
-		public void cancel() {
-			running = false;
-		}
+		return env.getStreamGraph().getJobGraph();
 	}
 }

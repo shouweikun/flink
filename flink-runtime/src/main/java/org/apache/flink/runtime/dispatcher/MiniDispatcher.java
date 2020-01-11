@@ -20,25 +20,23 @@ package org.apache.flink.runtime.dispatcher;
 
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.time.Time;
-import org.apache.flink.configuration.Configuration;
-import org.apache.flink.runtime.blob.BlobServer;
+import org.apache.flink.runtime.clusterframework.ApplicationStatus;
 import org.apache.flink.runtime.entrypoint.ClusterEntrypoint;
 import org.apache.flink.runtime.entrypoint.JobClusterEntrypoint;
 import org.apache.flink.runtime.executiongraph.ArchivedExecutionGraph;
-import org.apache.flink.runtime.heartbeat.HeartbeatServices;
-import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobmaster.JobResult;
 import org.apache.flink.runtime.messages.Acknowledge;
-import org.apache.flink.runtime.metrics.groups.JobManagerMetricGroup;
-import org.apache.flink.runtime.resourcemanager.ResourceManagerGateway;
-import org.apache.flink.runtime.rpc.FatalErrorHandler;
 import org.apache.flink.runtime.rpc.RpcService;
 import org.apache.flink.util.FlinkException;
 
-import javax.annotation.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import java.util.Collections;
 import java.util.concurrent.CompletableFuture;
+
+import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
  * Mini Dispatcher which is instantiated as the dispatcher component by the {@link JobClusterEntrypoint}.
@@ -49,42 +47,25 @@ import java.util.concurrent.CompletableFuture;
  * terminate after job completion if its execution mode is {@link ClusterEntrypoint.ExecutionMode#DETACHED}.
  */
 public class MiniDispatcher extends Dispatcher {
+	private static final Logger LOG = LoggerFactory.getLogger(MiniDispatcher.class);
 
 	private final JobClusterEntrypoint.ExecutionMode executionMode;
 
 	public MiniDispatcher(
 			RpcService rpcService,
 			String endpointId,
-			Configuration configuration,
-			HighAvailabilityServices highAvailabilityServices,
-			ResourceManagerGateway resourceManagerGateway,
-			BlobServer blobServer,
-			HeartbeatServices heartbeatServices,
-			JobManagerMetricGroup jobManagerMetricGroup,
-			@Nullable String metricQueryServicePath,
-			ArchivedExecutionGraphStore archivedExecutionGraphStore,
-			JobManagerRunnerFactory jobManagerRunnerFactory,
-			FatalErrorHandler fatalErrorHandler,
-			@Nullable String restAddress,
+			DispatcherId fencingToken,
+			DispatcherServices dispatcherServices,
 			JobGraph jobGraph,
 			JobClusterEntrypoint.ExecutionMode executionMode) throws Exception {
 		super(
 			rpcService,
 			endpointId,
-			configuration,
-			highAvailabilityServices,
-			new SingleJobSubmittedJobGraphStore(jobGraph),
-			resourceManagerGateway,
-			blobServer,
-			heartbeatServices,
-			jobManagerMetricGroup,
-			metricQueryServicePath,
-			archivedExecutionGraphStore,
-			jobManagerRunnerFactory,
-			fatalErrorHandler,
-			restAddress);
+			fencingToken,
+			Collections.singleton(jobGraph),
+			dispatcherServices);
 
-		this.executionMode = executionMode;
+		this.executionMode = checkNotNull(executionMode);
 	}
 
 	@Override
@@ -109,10 +90,31 @@ public class MiniDispatcher extends Dispatcher {
 
 		if (executionMode == ClusterEntrypoint.ExecutionMode.NORMAL) {
 			// terminate the MiniDispatcher once we served the first JobResult successfully
-			jobResultFuture.whenComplete((JobResult ignored, Throwable throwable) -> shutDown());
+			jobResultFuture.thenAccept((JobResult result) -> {
+				ApplicationStatus status = result.getSerializedThrowable().isPresent() ?
+						ApplicationStatus.FAILED : ApplicationStatus.SUCCEEDED;
+
+				LOG.debug("Shutting down per-job cluster because someone retrieved the job result.");
+				shutDownFuture.complete(status);
+			});
+		} else {
+			LOG.debug("Not shutting down per-job cluster after someone retrieved the job result.");
 		}
 
 		return jobResultFuture;
+	}
+
+	@Override
+	public CompletableFuture<Acknowledge> cancelJob(
+			JobID jobId, Time timeout) {
+		CompletableFuture<Acknowledge> cancelFuture = super.cancelJob(jobId, timeout);
+
+		cancelFuture.thenAccept((ignored) -> {
+			LOG.debug("Shutting down per-job cluster because the job was canceled.");
+			shutDownFuture.complete(ApplicationStatus.CANCELED);
+		});
+
+		return cancelFuture;
 	}
 
 	@Override
@@ -121,7 +123,7 @@ public class MiniDispatcher extends Dispatcher {
 
 		if (executionMode == ClusterEntrypoint.ExecutionMode.DETACHED) {
 			// shut down since we don't have to wait for the execution result retrieval
-			shutDown();
+			shutDownFuture.complete(ApplicationStatus.fromJobStatus(archivedExecutionGraph.getState()));
 		}
 	}
 
@@ -130,6 +132,6 @@ public class MiniDispatcher extends Dispatcher {
 		super.jobNotFinished(jobId);
 
 		// shut down since we have done our job
-		shutDown();
+		shutDownFuture.complete(ApplicationStatus.UNKNOWN);
 	}
 }

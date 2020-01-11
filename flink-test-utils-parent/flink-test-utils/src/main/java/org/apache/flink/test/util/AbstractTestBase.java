@@ -18,8 +18,8 @@
 
 package org.apache.flink.test.util;
 
-import org.apache.flink.configuration.Configuration;
-import org.apache.flink.testutils.category.LegacyAndNew;
+import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
+import org.apache.flink.testutils.junit.category.AlsoRunWithLegacyScheduler;
 import org.apache.flink.util.FileUtils;
 
 import org.junit.ClassRule;
@@ -56,17 +56,17 @@ import java.io.IOException;
  *
  * </pre>
  */
-@Category(LegacyAndNew.class)
+@Category(AlsoRunWithLegacyScheduler.class)
 public abstract class AbstractTestBase extends TestBaseUtils {
 
 	private static final int DEFAULT_PARALLELISM = 4;
 
 	@ClassRule
-	public static MiniClusterResource miniClusterResource = new MiniClusterResource(
-		new MiniClusterResource.MiniClusterResourceConfiguration(
-			new Configuration(),
-			1,
-			DEFAULT_PARALLELISM));
+	public static MiniClusterWithClientResource miniClusterResource = new MiniClusterWithClientResource(
+		new MiniClusterResourceConfiguration.Builder()
+			.setNumberTaskManagers(1)
+			.setNumberSlotsPerTaskManager(DEFAULT_PARALLELISM)
+			.build());
 
 	@ClassRule
 	public static final TemporaryFolder TEMPORARY_FOLDER = new TemporaryFolder();

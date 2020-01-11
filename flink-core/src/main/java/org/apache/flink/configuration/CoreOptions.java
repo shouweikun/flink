@@ -21,6 +21,11 @@ package org.apache.flink.configuration;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.annotation.docs.ConfigGroup;
 import org.apache.flink.annotation.docs.ConfigGroups;
+import org.apache.flink.annotation.docs.Documentation;
+import org.apache.flink.configuration.description.Description;
+
+import org.apache.flink.shaded.guava18.com.google.common.base.Splitter;
+import org.apache.flink.shaded.guava18.com.google.common.collect.Iterables;
 
 import static org.apache.flink.configuration.ConfigOptions.key;
 
@@ -89,7 +94,7 @@ public class CoreOptions {
 	 */
 	public static final ConfigOption<String> ALWAYS_PARENT_FIRST_LOADER_PATTERNS = ConfigOptions
 		.key("classloader.parent-first-patterns.default")
-		.defaultValue("java.;scala.;org.apache.flink.;com.esotericsoftware.kryo;org.apache.hadoop.;javax.annotation.;org.slf4j;org.apache.log4j;org.apache.logging;org.apache.commons.logging;ch.qos.logback")
+		.defaultValue("java.;scala.;org.apache.flink.;com.esotericsoftware.kryo;org.apache.hadoop.;javax.annotation.;org.slf4j;org.apache.log4j;org.apache.logging;org.apache.commons.logging;ch.qos.logback;org.xml;javax.xml;org.apache.xerces;org.w3c")
 		.withDeprecatedKeys("classloader.parent-first-patterns")
 		.withDescription("A (semicolon-separated) list of patterns that specifies which classes should always be" +
 			" resolved through the parent ClassLoader first. A pattern is a simple prefix that is checked against" +
@@ -106,21 +111,41 @@ public class CoreOptions {
 	public static String[] getParentFirstLoaderPatterns(Configuration config) {
 		String base = config.getString(ALWAYS_PARENT_FIRST_LOADER_PATTERNS);
 		String append = config.getString(ALWAYS_PARENT_FIRST_LOADER_PATTERNS_ADDITIONAL);
+		return parseParentFirstLoaderPatterns(base, append);
+	}
 
-		String[] basePatterns = base.isEmpty()
-			? new String[0]
-			: base.split(";");
+	/**
+	 * Plugin-specific option of {@link #ALWAYS_PARENT_FIRST_LOADER_PATTERNS}. Plugins use this parent first list
+	 * instead of the global version.
+	 */
+	public static final ConfigOption<String> PLUGIN_ALWAYS_PARENT_FIRST_LOADER_PATTERNS = ConfigOptions
+		.key("plugin.classloader.parent-first-patterns.default")
+		.stringType()
+		.defaultValue("java.;scala.;org.apache.flink.;javax.annotation.;org.slf4j;org.apache.log4j;org.apache" +
+			".logging;org.apache.commons.logging;ch.qos.logback")
+		.withDescription("A (semicolon-separated) list of patterns that specifies which classes should always be" +
+			" resolved through the plugin parent ClassLoader first. A pattern is a simple prefix that is checked " +
+			" against the fully qualified class name. This setting should generally not be modified. To add another " +
+			" pattern we recommend to use \"plugin.classloader.parent-first-patterns.additional\" instead.");
 
-		if (append.isEmpty()) {
-			return basePatterns;
-		} else {
-			String[] appendPatterns = append.split(";");
+	public static final ConfigOption<String> PLUGIN_ALWAYS_PARENT_FIRST_LOADER_PATTERNS_ADDITIONAL = ConfigOptions
+		.key("plugin.classloader.parent-first-patterns.additional")
+		.stringType()
+		.defaultValue("")
+		.withDescription("A (semicolon-separated) list of patterns that specifies which classes should always be" +
+			" resolved through the plugin parent ClassLoader first. A pattern is a simple prefix that is checked " +
+			" against the fully qualified class name. These patterns are appended to \"" +
+			PLUGIN_ALWAYS_PARENT_FIRST_LOADER_PATTERNS.key() + "\".");
 
-			String[] joinedPatterns = new String[basePatterns.length + appendPatterns.length];
-			System.arraycopy(basePatterns, 0, joinedPatterns, 0, basePatterns.length);
-			System.arraycopy(appendPatterns, 0, joinedPatterns, basePatterns.length, appendPatterns.length);
-			return joinedPatterns;
-		}
+	public static String[] getPluginParentFirstLoaderPatterns(Configuration config) {
+		String base = config.getString(PLUGIN_ALWAYS_PARENT_FIRST_LOADER_PATTERNS);
+		String append = config.getString(PLUGIN_ALWAYS_PARENT_FIRST_LOADER_PATTERNS_ADDITIONAL);
+		return parseParentFirstLoaderPatterns(base, append);
+	}
+
+	private static String[] parseParentFirstLoaderPatterns(String base, String append) {
+		Splitter splitter = Splitter.on(';').omitEmptyStrings();
+		return Iterables.toArray(Iterables.concat(splitter.split(base), splitter.split(append)), String.class);
 	}
 
 	// ------------------------------------------------------------------------
@@ -129,15 +154,23 @@ public class CoreOptions {
 
 	public static final ConfigOption<String> FLINK_JVM_OPTIONS = ConfigOptions
 		.key("env.java.opts")
-		.defaultValue("");
+		.defaultValue("")
+		.withDescription(Description.builder().text("Java options to start the JVM of all Flink processes with.").build());
 
 	public static final ConfigOption<String> FLINK_JM_JVM_OPTIONS = ConfigOptions
 		.key("env.java.opts.jobmanager")
-		.defaultValue("");
+		.defaultValue("")
+		.withDescription(Description.builder().text("Java options to start the JVM of the JobManager with.").build());
 
 	public static final ConfigOption<String> FLINK_TM_JVM_OPTIONS = ConfigOptions
 		.key("env.java.opts.taskmanager")
-		.defaultValue("");
+		.defaultValue("")
+		.withDescription(Description.builder().text("Java options to start the JVM of the TaskManager with.").build());
+
+	public static final ConfigOption<String> FLINK_HS_JVM_OPTIONS = ConfigOptions
+		.key("env.java.opts.historyserver")
+		.defaultValue("")
+		.withDescription(Description.builder().text("Java options to start the JVM of the HistoryServer with.").build());
 
 	/**
 	 * This options is here only for documentation generation, it is only
@@ -172,6 +205,28 @@ public class CoreOptions {
 			" TaskManager, and Zookeeper services (start-cluster.sh, stop-cluster.sh, start-zookeeper-quorum.sh," +
 			" stop-zookeeper-quorum.sh).");
 
+	/**
+	 * This options is here only for documentation generation, it is only
+	 * evaluated in the shell scripts.
+	 */
+	@SuppressWarnings("unused")
+	public static final ConfigOption<String> FLINK_HADOOP_CONF_DIR = ConfigOptions
+		.key("env.hadoop.conf.dir")
+		.noDefaultValue()
+		.withDescription("Path to hadoop configuration directory. It is required to read HDFS and/or YARN" +
+			" configuration. You can also set it via environment variable.");
+
+	/**
+	 * This options is here only for documentation generation, it is only
+	 * evaluated in the shell scripts.
+	 */
+	@SuppressWarnings("unused")
+	public static final ConfigOption<String> FLINK_YARN_CONF_DIR = ConfigOptions
+		.key("env.yarn.conf.dir")
+		.noDefaultValue()
+		.withDescription("Path to yarn configuration directory. It is required to run flink on YARN. You can also" +
+			" set it via environment variable.");
+
 	// ------------------------------------------------------------------------
 	//  generic io
 	// ------------------------------------------------------------------------
@@ -180,18 +235,22 @@ public class CoreOptions {
 	 * The config parameter defining the directories for temporary files, separated by
 	 * ",", "|", or the system's {@link java.io.File#pathSeparator}.
 	 */
+	@Documentation.OverrideDefault("'LOCAL_DIRS' on Yarn. '_FLINK_TMP_DIR' on Mesos. System.getProperty(\"java.io.tmpdir\") in standalone.")
 	public static final ConfigOption<String> TMP_DIRS =
 		key("io.tmp.dirs")
 			.defaultValue(System.getProperty("java.io.tmpdir"))
-			.withDeprecatedKeys("taskmanager.tmp.dirs");
+			.withDeprecatedKeys("taskmanager.tmp.dirs")
+			.withDescription("Directories for temporary files, separated by\",\", \"|\", or the system's java.io.File.pathSeparator.");
 
 	// ------------------------------------------------------------------------
 	//  program
 	// ------------------------------------------------------------------------
 
+	@Documentation.CommonOption(position = Documentation.CommonOption.POSITION_PARALLELISM_SLOTS)
 	public static final ConfigOption<Integer> DEFAULT_PARALLELISM = ConfigOptions
 		.key("parallelism.default")
-		.defaultValue(1);
+		.defaultValue(1)
+		.withDescription("Default parallelism for jobs.");
 
 	// ------------------------------------------------------------------------
 	//  file systems
@@ -204,7 +263,7 @@ public class CoreOptions {
 			.key("fs.default-scheme")
 			.noDefaultValue()
 			.withDescription("The default filesystem scheme, used for paths that do not declare a scheme explicitly." +
-				" May contain an authority, e.g. host:port in case of a HDFS NameNode.");
+				" May contain an authority, e.g. host:port in case of an HDFS NameNode.");
 
 	/**
 	 * Specifies whether file output writers should overwrite existing files by default.
@@ -270,26 +329,4 @@ public class CoreOptions {
 	public static ConfigOption<Long> fileSystemConnectionLimitStreamInactivityTimeout(String scheme) {
 		return ConfigOptions.key("fs." + scheme + ".limit.stream-timeout").defaultValue(0L);
 	}
-
-	// ------------------------------------------------------------------------
-	//  Distributed architecture
-	// ------------------------------------------------------------------------
-
-	/**
-	 * Constant value for the new execution mode.
-	 */
-	public static final String NEW_MODE = "new";
-
-	/**
-	 * Constant value for the old execution mode.
-	 */
-	public static final String LEGACY_MODE = "legacy";
-
-	/**
-	 * Switch to select the execution mode. Possible values are {@link CoreOptions#NEW_MODE}
-	 * and {@link CoreOptions#LEGACY_MODE}.
-	 */
-	public static final ConfigOption<String> MODE = key("mode")
-		.defaultValue(NEW_MODE)
-		.withDescription("Switch to select the execution mode. Possible values are 'new' and 'legacy'.");
 }

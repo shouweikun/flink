@@ -33,7 +33,7 @@ import org.apache.flink.streaming.api.functions.source.ContinuousFileMonitoringF
 import org.apache.flink.streaming.api.functions.source.ContinuousFileReaderOperator;
 import org.apache.flink.streaming.api.functions.source.FileProcessingMode;
 import org.apache.flink.streaming.api.functions.source.TimestampedFileInputSplit;
-import org.apache.flink.streaming.util.StreamingProgramTestBase;
+import org.apache.flink.test.util.AbstractTestBase;
 
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileUtil;
@@ -41,6 +41,7 @@ import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Test;
 
 import java.io.File;
 import java.io.IOException;
@@ -58,7 +59,7 @@ import static org.junit.Assert.assertEquals;
 /**
  * IT cases for the {@link ContinuousFileMonitoringFunction} and {@link ContinuousFileReaderOperator}.
  */
-public class ContinuousFileProcessingITCase extends StreamingProgramTestBase {
+public class ContinuousFileProcessingITCase extends AbstractTestBase {
 
 	private static final int NO_OF_FILES = 5;
 	private static final int LINES_PER_FILE = 100;
@@ -77,41 +78,31 @@ public class ContinuousFileProcessingITCase extends StreamingProgramTestBase {
 	//						PREPARING FOR THE TESTS
 
 	@Before
-	public void createHDFS() {
-		try {
-			baseDir = new File("./target/hdfs/hdfsTesting").getAbsoluteFile();
-			FileUtil.fullyDelete(baseDir);
+	public void createHDFS() throws IOException {
+		baseDir = new File("./target/hdfs/hdfsTesting").getAbsoluteFile();
+		FileUtil.fullyDelete(baseDir);
 
-			org.apache.hadoop.conf.Configuration hdConf = new org.apache.hadoop.conf.Configuration();
-			hdConf.set(MiniDFSCluster.HDFS_MINIDFS_BASEDIR, baseDir.getAbsolutePath());
-			hdConf.set("dfs.block.size", String.valueOf(1048576)); // this is the minimum we can set.
+		org.apache.hadoop.conf.Configuration hdConf = new org.apache.hadoop.conf.Configuration();
+		hdConf.set(MiniDFSCluster.HDFS_MINIDFS_BASEDIR, baseDir.getAbsolutePath());
+		hdConf.set("dfs.block.size", String.valueOf(1048576)); // this is the minimum we can set.
 
-			MiniDFSCluster.Builder builder = new MiniDFSCluster.Builder(hdConf);
-			hdfsCluster = builder.build();
+		MiniDFSCluster.Builder builder = new MiniDFSCluster.Builder(hdConf);
+		hdfsCluster = builder.build();
 
-			hdfsURI = "hdfs://" + hdfsCluster.getURI().getHost() + ":" + hdfsCluster.getNameNodePort() + "/";
-			hdfs = new org.apache.hadoop.fs.Path(hdfsURI).getFileSystem(hdConf);
-
-		} catch (Throwable e) {
-			e.printStackTrace();
-			Assert.fail("Test failed " + e.getMessage());
-		}
+		hdfsURI = "hdfs://" + hdfsCluster.getURI().getHost() + ":" + hdfsCluster.getNameNodePort() + "/";
+		hdfs = new org.apache.hadoop.fs.Path(hdfsURI).getFileSystem(hdConf);
 	}
 
 	@After
 	public void destroyHDFS() {
-		try {
-			FileUtil.fullyDelete(baseDir);
-			hdfsCluster.shutdown();
-		} catch (Throwable t) {
-			throw new RuntimeException(t);
-		}
+		FileUtil.fullyDelete(baseDir);
+		hdfsCluster.shutdown();
 	}
 
 	//						END OF PREPARATIONS
 
-	@Override
-	protected void testProgram() throws Exception {
+	@Test
+	public void testProgram() throws Exception {
 
 		/*
 		* This test checks the interplay between the monitor and the reader
@@ -159,11 +150,6 @@ public class ContinuousFileProcessingITCase extends StreamingProgramTestBase {
 					Throwable th = e;
 					for (int depth = 0; depth < 20; depth++) {
 						if (th instanceof SuccessException) {
-							try {
-								postSubmit();
-							} catch (Exception e1) {
-								e1.printStackTrace();
-							}
 							return;
 						} else if (th.getCause() != null) {
 							th = th.getCause();

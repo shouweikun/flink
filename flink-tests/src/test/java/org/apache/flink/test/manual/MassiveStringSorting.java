@@ -19,17 +19,18 @@
 package org.apache.flink.test.manual;
 
 import org.apache.flink.api.common.ExecutionConfig;
+import org.apache.flink.api.common.typeinfo.TypeHint;
 import org.apache.flink.api.common.typeutils.TypeComparator;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.common.typeutils.base.StringComparator;
 import org.apache.flink.api.common.typeutils.base.StringSerializer;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.typeutils.TupleTypeInfo;
-import org.apache.flink.api.java.typeutils.TypeInfoParser;
 import org.apache.flink.api.java.typeutils.runtime.RuntimeSerializerFactory;
 import org.apache.flink.runtime.io.disk.iomanager.IOManager;
 import org.apache.flink.runtime.io.disk.iomanager.IOManagerAsync;
 import org.apache.flink.runtime.memory.MemoryManager;
+import org.apache.flink.runtime.memory.MemoryManagerBuilder;
 import org.apache.flink.runtime.operators.sort.UnilateralSortMerger;
 import org.apache.flink.runtime.operators.testutils.DummyInvokable;
 import org.apache.flink.util.MutableObjectIterator;
@@ -83,11 +84,9 @@ public class MassiveStringSorting {
 			BufferedReader reader = null;
 			BufferedReader verifyReader = null;
 			MemoryManager mm = null;
-			IOManager ioMan = null;
 
-			try {
-				mm = new MemoryManager(1024 * 1024, 1);
-				ioMan = new IOManagerAsync();
+			try (IOManager ioMan = new IOManagerAsync()) {
+				mm = MemoryManagerBuilder.newBuilder().setMemorySize(1024 * 1024).build();
 
 				TypeSerializer<String> serializer = StringSerializer.INSTANCE;
 				TypeComparator<String> comparator = new StringComparator(true);
@@ -126,9 +125,6 @@ public class MassiveStringSorting {
 				}
 				if (mm != null) {
 					mm.shutdown();
-				}
-				if (ioMan != null) {
-					ioMan.shutdown();
 				}
 			}
 		}
@@ -182,14 +178,12 @@ public class MassiveStringSorting {
 			BufferedReader reader = null;
 			BufferedReader verifyReader = null;
 			MemoryManager mm = null;
-			IOManager ioMan = null;
 
-			try {
-				mm = new MemoryManager(1024 * 1024, 1);
-				ioMan = new IOManagerAsync();
+			try (IOManager ioMan = new IOManagerAsync()) {
+				mm = MemoryManagerBuilder.newBuilder().setMemorySize(1024 * 1024).build();
 
 				TupleTypeInfo<Tuple2<String, String[]>> typeInfo = (TupleTypeInfo<Tuple2<String, String[]>>)
-						TypeInfoParser.<Tuple2<String, String[]>>parse("Tuple2<String, String[]>");
+						new TypeHint<Tuple2<String, String[]>>(){}.getTypeInfo();
 
 				TypeSerializer<Tuple2<String, String[]>> serializer = typeInfo.createSerializer(new ExecutionConfig());
 				TypeComparator<Tuple2<String, String[]>> comparator = typeInfo.createComparator(new int[] { 0 }, new boolean[] { true }, 0, new ExecutionConfig());
@@ -255,9 +249,6 @@ public class MassiveStringSorting {
 				}
 				if (mm != null) {
 					mm.shutdown();
-				}
-				if (ioMan != null) {
-					ioMan.shutdown();
 				}
 			}
 		}
