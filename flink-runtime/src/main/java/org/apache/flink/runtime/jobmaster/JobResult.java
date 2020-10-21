@@ -43,6 +43,7 @@ import java.util.Optional;
 
 import static java.util.Objects.requireNonNull;
 import static org.apache.flink.util.Preconditions.checkArgument;
+import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
  * Similar to {@link org.apache.flink.api.common.JobExecutionResult} but with an optional
@@ -226,18 +227,17 @@ public class JobResult implements Serializable {
 
 		builder.applicationStatus(ApplicationStatus.fromJobStatus(accessExecutionGraph.getState()));
 
-		final long netRuntime = accessExecutionGraph.getStatusTimestamp(jobStatus) - accessExecutionGraph.getStatusTimestamp(JobStatus.CREATED);
+		final long netRuntime = accessExecutionGraph.getStatusTimestamp(jobStatus) - accessExecutionGraph.getStatusTimestamp(JobStatus.INITIALIZING);
 		// guard against clock changes
 		final long guardedNetRuntime = Math.max(netRuntime, 0L);
 		builder.netRuntime(guardedNetRuntime);
 		builder.accumulatorResults(accessExecutionGraph.getAccumulatorsSerialized());
 
-		if (jobStatus != JobStatus.FINISHED) {
+		if (jobStatus == JobStatus.FAILED) {
 			final ErrorInfo errorInfo = accessExecutionGraph.getFailureInfo();
+			checkNotNull(errorInfo, "No root cause is found for the job failure.");
 
-			if (errorInfo != null) {
-				builder.serializedThrowable(errorInfo.getException());
-			}
+			builder.serializedThrowable(errorInfo.getException());
 		}
 
 		return builder.build();

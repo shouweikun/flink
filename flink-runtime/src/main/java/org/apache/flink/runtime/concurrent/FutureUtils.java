@@ -28,10 +28,13 @@ import org.apache.flink.util.function.SupplierWithException;
 
 import akka.dispatch.OnComplete;
 
+import javax.annotation.Nullable;
+
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -54,6 +57,7 @@ import java.util.function.Supplier;
 
 import scala.concurrent.Future;
 
+import static org.apache.flink.util.Preconditions.checkCompletedNormally;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
@@ -70,6 +74,21 @@ public class FutureUtils {
 	 */
 	public static CompletableFuture<Void> completedVoidFuture() {
 		return COMPLETED_VOID_FUTURE;
+	}
+
+	/**
+	 * Fakes asynchronous execution by immediately executing the operation and completing the supplied future
+	 * either noramlly or exceptionally.
+	 *
+	 * @param operation to executed
+	 * @param <T> type of the result
+	 */
+	public static <T> void completeFromCallable(CompletableFuture<T> future, Callable<T> operation) {
+		try {
+			future.complete(operation.call());
+		} catch (Exception e) {
+			future.completeExceptionally(e);
+		}
 	}
 
 	// ------------------------------------------------------------------------
@@ -403,7 +422,21 @@ public class FutureUtils {
 	 * @return The timeout enriched future
 	 */
 	public static <T> CompletableFuture<T> orTimeout(CompletableFuture<T> future, long timeout, TimeUnit timeUnit) {
-		return orTimeout(future, timeout, timeUnit, Executors.directExecutor());
+		return orTimeout(future, timeout, timeUnit, Executors.directExecutor(), null);
+	}
+
+	/**
+	 * Times the given future out after the timeout.
+	 *
+	 * @param future to time out
+	 * @param timeout after which the given future is timed out
+	 * @param timeUnit time unit of the timeout
+	 * @param timeoutMsg timeout message for exception
+	 * @param <T> type of the given future
+	 * @return The timeout enriched future
+	 */
+	public static <T> CompletableFuture<T> orTimeout(CompletableFuture<T> future, long timeout, TimeUnit timeUnit, @Nullable String timeoutMsg) {
+		return orTimeout(future, timeout, timeUnit, Executors.directExecutor(), timeoutMsg);
 	}
 
 	/**
@@ -421,10 +454,30 @@ public class FutureUtils {
 		long timeout,
 		TimeUnit timeUnit,
 		Executor timeoutFailExecutor) {
+		return orTimeout(future, timeout, timeUnit, timeoutFailExecutor, null);
+	}
+
+	/**
+	 * Times the given future out after the timeout.
+	 *
+	 * @param future to time out
+	 * @param timeout after which the given future is timed out
+	 * @param timeUnit time unit of the timeout
+	 * @param timeoutFailExecutor executor that will complete the future exceptionally after the timeout is reached
+	 * @param timeoutMsg timeout message for exception
+	 * @param <T> type of the given future
+	 * @return The timeout enriched future
+	 */
+	public static <T> CompletableFuture<T> orTimeout(
+		CompletableFuture<T> future,
+		long timeout,
+		TimeUnit timeUnit,
+		Executor timeoutFailExecutor,
+		@Nullable String timeoutMsg) {
 
 		if (!future.isDone()) {
 			final ScheduledFuture<?> timeoutFuture = Delayer.delay(
-				() -> timeoutFailExecutor.execute(new Timeout(future)), timeout, timeUnit);
+				() -> timeoutFailExecutor.execute(new Timeout(future, timeoutMsg)), timeout, timeUnit);
 
 			future.whenComplete((T value, Throwable throwable) -> {
 				if (!timeoutFuture.isDone()) {
@@ -984,19 +1037,66 @@ public class FutureUtils {
 	}
 
 	/**
+	 * @return true if future has completed normally, false otherwise.
+	 */
+	public static boolean isCompletedNormally(CompletableFuture<?> future) {
+		return future.isDone() && !future.isCompletedExceptionally();
+	}
+
+	/**
+	 * Perform check state that future has completed normally and return the result.
+	 *
+	 * @return the result of completable future.
+	 * @throws IllegalStateException Thrown, if future has not completed or it has completed exceptionally.
+	 */
+	public static <T> T checkStateAndGet(CompletableFuture<T> future) {
+		checkCompletedNormally(future);
+		return getWithoutException(future);
+	}
+
+	/**
+	 * Gets the result of a completable future without any exception thrown.
+	 *
+	 * @param future the completable future specified.
+	 * @param <T> the type of result
+	 * @return the result of completable future,
+	 * or null if it's unfinished or finished exceptionally
+	 */
+	@Nullable
+	public static <T> T getWithoutException(CompletableFuture<T> future) {
+		if (isCompletedNormally(future)) {
+			try {
+				return future.get();
+			} catch (InterruptedException | ExecutionException ignored) {
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * @return the result of completable future, or the defaultValue if it has not yet completed.
+	 */
+	public static <T> T getOrDefault(CompletableFuture<T> future, T defaultValue) {
+		T value = getWithoutException(future);
+		return value == null ? defaultValue : value;
+	}
+
+	/**
 	 * Runnable to complete the given future with a {@link TimeoutException}.
 	 */
 	private static final class Timeout implements Runnable {
 
 		private final CompletableFuture<?> future;
+		private final String timeoutMsg;
 
-		private Timeout(CompletableFuture<?> future) {
+		private Timeout(CompletableFuture<?> future, @Nullable String timeoutMsg) {
 			this.future = checkNotNull(future);
+			this.timeoutMsg = timeoutMsg;
 		}
 
 		@Override
 		public void run() {
-			future.completeExceptionally(new TimeoutException());
+			future.completeExceptionally(new TimeoutException(timeoutMsg));
 		}
 	}
 
@@ -1060,12 +1160,42 @@ public class FutureUtils {
 	 * @param <T> type of the value
 	 */
 	public static <T> void forward(CompletableFuture<T> source, CompletableFuture<T> target) {
-		source.whenComplete((value, throwable) -> {
+		source.whenComplete(forwardTo(target));
+	}
+
+	/**
+	 * Forwards the value from the source future to the target future using the provided executor.
+	 *
+	 * @param source future to forward the value from
+	 * @param target future to forward the value to
+	 * @param executor executor to forward the source value to the target future
+	 * @param <T> type of the value
+	 */
+	public static <T> void forwardAsync(CompletableFuture<T> source, CompletableFuture<T> target, Executor executor) {
+		source.whenCompleteAsync(
+			forwardTo(target),
+			executor);
+	}
+
+	/**
+	 * Throws the causing exception if the given future is completed exceptionally, otherwise do nothing.
+	 *
+	 * @param future the future to check.
+	 * @throws Exception when the future is completed exceptionally.
+	 */
+	public static void throwIfCompletedExceptionally(CompletableFuture<?> future) throws Exception {
+		if (future.isCompletedExceptionally()) {
+			future.get();
+		}
+	}
+
+	private static <T> BiConsumer<T, Throwable> forwardTo(CompletableFuture<T> target) {
+		return (value, throwable) -> {
 			if (throwable != null) {
 				target.completeExceptionally(throwable);
 			} else {
 				target.complete(value);
 			}
-		});
+		};
 	}
 }
