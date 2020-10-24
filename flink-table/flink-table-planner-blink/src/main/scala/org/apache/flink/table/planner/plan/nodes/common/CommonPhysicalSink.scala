@@ -30,6 +30,7 @@ import org.apache.flink.streaming.api.transformations.LegacySinkTransformation
 import org.apache.flink.table.api.TableConfig
 import org.apache.flink.table.api.config.ExecutionConfigOptions
 import org.apache.flink.table.catalog.{CatalogTable, ObjectIdentifier}
+import org.apache.flink.table.connector.ParallelismProvider
 import org.apache.flink.table.connector.sink.{DataStreamSinkProvider, DynamicTableSink, OutputFormatProvider, SinkFunctionProvider}
 import org.apache.flink.table.data.RowData
 import org.apache.flink.table.planner.calcite.FlinkTypeFactory
@@ -79,6 +80,7 @@ class CommonPhysicalSink (
     val enforcer = new SinkNotNullEnforcer(notNullEnforcer, notNullFieldIndices, fieldNames)
 
     runtimeProvider match {
+      case _: DataStreamSinkProvider with ParallelismProvider => throw new RuntimeException("`DataStreamSinkProvider` is not allowed to work with `ParallelismProvider`, please see document of `ParallelismProvider`")
       case provider: DataStreamSinkProvider =>
         val dataStream = new DataStream(env, inputTransformation).filter(enforcer)
         provider.consumeDataStream(dataStream).getTransformation.asInstanceOf[Transformation[Any]]
@@ -99,11 +101,19 @@ class CommonPhysicalSink (
 
         val operator = new SinkOperator(env.clean(sinkFunction), rowtimeFieldIndex, enforcer)
 
+        val inputParallelism = inputTransformation.getParallelism
+        val taskParallelism = env.getParallelism
+        val parallelism = if (runtimeProvider.isInstanceOf[ParallelismProvider]) runtimeProvider.asInstanceOf[ParallelismProvider].getParallelism.orElse(inputParallelism).intValue()
+        else inputParallelism
+
+        if (implicitly[Ordering[Int]].lteq(parallelism, 0)) throw new RuntimeException(s"the configured sink parallelism: $parallelism should not be less than zero or equal to zero")
+        if (implicitly[Ordering[Int]].gt(parallelism, taskParallelism)) throw new RuntimeException(s"the configured sink parallelism: $parallelism is larger than the task max parallelism: $taskParallelism")
+
         new LegacySinkTransformation(
           inputTransformation,
           getRelDetailedDescription,
           SimpleOperatorFactory.of(operator),
-          inputTransformation.getParallelism).asInstanceOf[Transformation[Any]]
+          parallelism).asInstanceOf[Transformation[Any]]
     }
   }
 
