@@ -30,6 +30,7 @@ import org.apache.flink.streaming.api.transformations.LegacySinkTransformation
 import org.apache.flink.table.api.TableConfig
 import org.apache.flink.table.api.config.ExecutionConfigOptions
 import org.apache.flink.table.catalog.{CatalogTable, ObjectIdentifier}
+import org.apache.flink.table.connector.ParallelismProvider
 import org.apache.flink.table.connector.sink.{DataStreamSinkProvider, DynamicTableSink, OutputFormatProvider, SinkFunctionProvider}
 import org.apache.flink.table.data.RowData
 import org.apache.flink.table.planner.calcite.FlinkTypeFactory
@@ -44,27 +45,27 @@ import org.apache.flink.table.types.logical.RowType
 import scala.collection.JavaConversions._
 
 /**
- * Base physical RelNode to write data to an external sink defined by a [[DynamicTableSink]].
- */
-class CommonPhysicalSink (
-    cluster: RelOptCluster,
-    traitSet: RelTraitSet,
-    inputRel: RelNode,
-    tableIdentifier: ObjectIdentifier,
-    catalogTable: CatalogTable,
-    tableSink: DynamicTableSink)
+  * Base physical RelNode to write data to an external sink defined by a [[DynamicTableSink]].
+  */
+class CommonPhysicalSink(
+                          cluster: RelOptCluster,
+                          traitSet: RelTraitSet,
+                          inputRel: RelNode,
+                          tableIdentifier: ObjectIdentifier,
+                          catalogTable: CatalogTable,
+                          tableSink: DynamicTableSink)
   extends Sink(cluster, traitSet, inputRel, tableIdentifier, catalogTable, tableSink)
-  with FlinkPhysicalRel {
+    with FlinkPhysicalRel {
 
   /**
-   * Common implementation to create sink transformation for both batch and streaming.
-   */
+    * Common implementation to create sink transformation for both batch and streaming.
+    */
   protected def createSinkTransformation(
-      env: StreamExecutionEnvironment,
-      inputTransformation: Transformation[RowData],
-      tableConfig: TableConfig,
-      rowtimeFieldIndex: Int,
-      isBounded: Boolean): Transformation[Any] = {
+                                          env: StreamExecutionEnvironment,
+                                          inputTransformation: Transformation[RowData],
+                                          tableConfig: TableConfig,
+                                          rowtimeFieldIndex: Int,
+                                          isBounded: Boolean): Transformation[Any] = {
     val inputTypeInfo = InternalTypeInfo.of(FlinkTypeFactory.toLogicalRowType(getInput.getRowType))
     val runtimeProvider = tableSink.getSinkRuntimeProvider(
       new SinkRuntimeProviderContext(isBounded))
@@ -73,12 +74,13 @@ class CommonPhysicalSink (
       .get(ExecutionConfigOptions.TABLE_EXEC_SINK_NOT_NULL_ENFORCER)
     val notNullFieldIndices = TableSinkUtils.getNotNullFieldIndices(catalogTable)
     val fieldNames = catalogTable.getSchema.toPhysicalRowDataType
-        .getLogicalType.asInstanceOf[RowType]
-        .getFieldNames
-        .toList.toArray
+      .getLogicalType.asInstanceOf[RowType]
+      .getFieldNames
+      .toList.toArray
     val enforcer = new SinkNotNullEnforcer(notNullEnforcer, notNullFieldIndices, fieldNames)
 
     runtimeProvider match {
+      case _: DataStreamSinkProvider with ParallelismProvider => throw new RuntimeException("`DataStreamSinkProvider` is not allowed to work with `ParallelismProvider`, please see document of `ParallelismProvider`")
       case provider: DataStreamSinkProvider =>
         val dataStream = new DataStream(env, inputTransformation).filter(enforcer)
         provider.consumeDataStream(dataStream).getTransformation.asInstanceOf[Transformation[Any]]
@@ -99,11 +101,19 @@ class CommonPhysicalSink (
 
         val operator = new SinkOperator(env.clean(sinkFunction), rowtimeFieldIndex, enforcer)
 
+        val inputParallelism = inputTransformation.getParallelism
+        val taskParallelism = env.getParallelism
+        val parallelism = if (runtimeProvider.isInstanceOf[ParallelismProvider]) runtimeProvider.asInstanceOf[ParallelismProvider].getParallelism.orElse(inputParallelism).intValue()
+        else inputParallelism
+
+        if (implicitly[Ordering[Int]].lteq(parallelism, 0)) throw new RuntimeException(s"the configured sink parallelism: $parallelism should not be little or equal zero")
+        if (implicitly[Ordering[Int]].gt(parallelism, taskParallelism)) throw new RuntimeException(s"the configured sink parallelism: $parallelism is larger than the task max parallelism: $taskParallelism")
+
         new LegacySinkTransformation(
           inputTransformation,
           getRelDetailedDescription,
           SimpleOperatorFactory.of(operator),
-          inputTransformation.getParallelism).asInstanceOf[Transformation[Any]]
+          parallelism).asInstanceOf[Transformation[Any]]
     }
   }
 
