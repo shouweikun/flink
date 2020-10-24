@@ -288,6 +288,8 @@ public final class TestValuesTableFactory implements DynamicTableSourceFactory, 
 		.asList()
 		.defaultValues();
 
+	private static final ConfigOption<Integer> SINK_PARALLELISM = FactoryUtil.SINK_PARALLELISM;
+
 	@Override
 	public String factoryIdentifier() {
 		return IDENTIFIER;
@@ -386,6 +388,7 @@ public final class TestValuesTableFactory implements DynamicTableSourceFactory, 
 		boolean isInsertOnly = helper.getOptions().get(SINK_INSERT_ONLY);
 		String runtimeSink = helper.getOptions().get(RUNTIME_SINK);
 		int expectedNum = helper.getOptions().get(SINK_EXPECTED_MESSAGES_NUM);
+		Integer parallelism = helper.getOptions().get(SINK_PARALLELISM);
 		final Map<String, DataType> writableMetadata = convertToMetadataMap(
 			helper.getOptions().get(WRITABLE_METADATA),
 			context.getClassLoader());
@@ -402,7 +405,8 @@ public final class TestValuesTableFactory implements DynamicTableSourceFactory, 
 				isInsertOnly,
 				runtimeSink,
 				expectedNum,
-				writableMetadata);
+				writableMetadata,
+				parallelism);
 		} else {
 			try {
 				return InstantiationUtil.instantiate(
@@ -440,6 +444,7 @@ public final class TestValuesTableFactory implements DynamicTableSourceFactory, 
 			FILTERABLE_FIELDS,
 			PARTITION_LIST,
 			READABLE_METADATA,
+			SINK_PARALLELISM,
 			WRITABLE_METADATA));
 	}
 
@@ -933,6 +938,7 @@ public final class TestValuesTableFactory implements DynamicTableSourceFactory, 
 		private final String runtimeSink;
 		private final int expectedNum;
 		private final Map<String, DataType> writableMetadata;
+		private final Integer parallelism;
 
 		private TestValuesTableSink(
 				DataType consumedDataType,
@@ -941,7 +947,8 @@ public final class TestValuesTableFactory implements DynamicTableSourceFactory, 
 				boolean isInsertOnly,
 				String runtimeSink,
 				int expectedNum,
-				Map<String, DataType> writableMetadata) {
+				Map<String, DataType> writableMetadata,
+				@Nullable Integer parallelism) {
 			this.consumedDataType = consumedDataType;
 			this.primaryKeyIndices = primaryKeyIndices;
 			this.tableName = tableName;
@@ -949,6 +956,7 @@ public final class TestValuesTableFactory implements DynamicTableSourceFactory, 
 			this.runtimeSink = runtimeSink;
 			this.expectedNum = expectedNum;
 			this.writableMetadata = writableMetadata;
+			this.parallelism = parallelism;
 		}
 
 		@Override
@@ -975,6 +983,7 @@ public final class TestValuesTableFactory implements DynamicTableSourceFactory, 
 		@Override
 		public SinkRuntimeProvider getSinkRuntimeProvider(Context context) {
 			DataStructureConverter converter = context.createDataStructureConverter(consumedDataType);
+			final Optional<Integer> parallelism = Optional.ofNullable(this.parallelism);
 			if (isInsertOnly) {
 				checkArgument(expectedNum == -1,
 					"Appending Sink doesn't support '" + SINK_EXPECTED_MESSAGES_NUM.key() + "' yet.");
@@ -983,15 +992,19 @@ public final class TestValuesTableFactory implements DynamicTableSourceFactory, 
 						return SinkFunctionProvider.of(
 								new AppendingSinkFunction(
 										tableName,
-										converter));
+										converter),
+										parallelism);
 					case "OutputFormat":
 						return OutputFormatProvider.of(
 								new AppendingOutputFormat(
 										tableName,
-										converter));
+										converter),
+										parallelism);
 					case "DataStream":
 						return (DataStreamSinkProvider) dataStream ->
 								dataStream.addSink(new AppendingSinkFunction(tableName, converter));
+					case "DataStreamWithParallelism":
+						return new TestValuesRuntimeFunctions.InternalDataStreamSinkProviderWithParallelism(1);
 					default:
 						throw new IllegalArgumentException("Unsupported runtime sink class: " + runtimeSink);
 				}
@@ -1025,7 +1038,8 @@ public final class TestValuesTableFactory implements DynamicTableSourceFactory, 
 				isInsertOnly,
 				runtimeSink,
 				expectedNum,
-				writableMetadata);
+				writableMetadata,
+				parallelism);
 		}
 
 		@Override
